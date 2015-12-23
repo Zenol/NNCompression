@@ -99,14 +99,14 @@ compress_picture(ffnn::Network<T> &net, const boost::numeric::ublas::vector<T> &
         for (int j = 0; j < cols; j++)
             patch_list.push_back(patchify(input, i, j, width, patch_size));
 
-    const int nb_cp = 1;
+    const int nb_cp = 3;
     const int nb_iter = nb_cp * rows * cols;
     int count = 0;
     for (int z = 0; z < nb_cp; z++)
         for (auto patch : patch_list)
         {
             // Learn to be an autoencoder
-            net.train(1, patch, patch);
+            net.train(3, patch, patch);
             count++;
             if (count % 10)
                 pgBar->setValue(5 + 90 * count / nb_iter);
@@ -158,11 +158,17 @@ void MainWindow::on_pushButton_clicked()
     ffnn::Network<double> net;
     // Patchs are made of patch_size_patch_size square, where each pixel
     // has 3 colors.
-    ffnn::Layer<double> l1(input_size, hidden_size, ffnn::sigmoid, ffnn::sigmoid_prime);
+    ffnn::Layer<double> l1(input_size, hidden_size * 2, ffnn::sigmoid, ffnn::sigmoid_prime);
+    ffnn::Layer<double> l1a(hidden_size * 2, hidden_size, ffnn::sigmoid, ffnn::sigmoid_prime);
+    ffnn::Layer<double> l2a(hidden_size, hidden_size * 2, ffnn::sigmoid, ffnn::sigmoid_prime);
+    ffnn::Layer<double> l2(hidden_size * 2, input_size, ffnn::sigmoid, ffnn::sigmoid_prime);
     l1.randomize();
-    ffnn::Layer<double> l2(hidden_size, input_size, ffnn::sigmoid, ffnn::sigmoid_prime);
+    l1a.randomize();
+    l2a.randomize();
     l2.randomize();
     net.connect_layer(l1);
+    net.connect_layer(l1a);
+    net.connect_layer(l2a);
     net.connect_layer(l2);
 
     // Prepare matrix for compression
@@ -199,9 +205,9 @@ void MainWindow::on_pushButton_clicked()
         {
             const int pos = 3 * (x + y * width);
             // Remove offset
-            const QRgb pix = qRgb(std::max(255, output[pos] * 256),
-                                  std::max(255, output[pos + 1] * 256),
-                                  std::max(255, output[pos + 2] * 256));
+            const QRgb pix = qRgb(std::min(255, (int)(output[pos] * 256)),
+                                  std::min(255, (int)(output[pos + 1] * 256)),
+                                  std::min(255, (int)(output[pos + 2] * 256)));
             outputImage.setPixel(x, y, pix);
         }
 
