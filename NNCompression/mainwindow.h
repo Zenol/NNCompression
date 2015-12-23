@@ -3,6 +3,8 @@
 
 #include <QMainWindow>
 
+typedef unsigned int uint;
+
 namespace Ui {
 class MainWindow;
 }
@@ -24,10 +26,19 @@ private slots:
 
     void on_hiddenSize_valueChanged(int arg1);
 
+    void updateValues(bool allowCompress);
+
+    void setUIstate(bool st);
+
+    void on_loop_valueChanged(int arg1);
+
+    void on_actionSave_output_picture_triggered();
+
 private:
     Ui::MainWindow *ui;
 
     QImage inputImage;
+    QImage outputImage;
 };
 
 #endif // MAINWINDOW_H

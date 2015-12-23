@@ -9,6 +9,8 @@
 
 #include "Network.hpp"
 
+#define __SQ(x) ((x) * (x))
+
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow)
@@ -34,24 +36,22 @@ MainWindow::~MainWindow()
 template<typename T>
 boost::numeric::ublas::vector<T>
 patchify(const boost::numeric::ublas::vector<T> &input,
-         unsigned int i, unsigned int j,
-         unsigned int width, unsigned int patch_size)
+         uint i, uint j,
+         uint width, uint patch_size)
 {
     using namespace boost::numeric::ublas;
 
-    vector<T> patch(patch_size * patch_size * 3);
+    vector<T> patch(patch_size * patch_size);
     patch.clear();
 
-    for (unsigned int x = 0; x < patch_size; x++)
-        for (unsigned int y = 0; y < patch_size; y++)
+    for (uint x = 0; x < patch_size; x++)
+        for (uint y = 0; y < patch_size; y++)
         {
-            const unsigned int x2 = x + i * patch_size;
-            const unsigned int y2 = y + j * patch_size;
-            const unsigned int opos = 3 * (x + y * patch_size);
-            const unsigned int ipos = 3 * (x2 + y2 * width);
+            const uint x2 = x + i * patch_size;
+            const uint y2 = y + j * patch_size;
+            const uint opos = x + y * patch_size;
+            const uint ipos = x2 + y2 * width;
             patch[opos] = input[ipos];
-            patch[opos + 1] = input[ipos + 1];
-            patch[opos + 2] = input[ipos + 2];
         }
 
     return patch;
@@ -61,48 +61,47 @@ patchify(const boost::numeric::ublas::vector<T> &input,
 template<typename T>
 void unpatchify(boost::numeric::ublas::vector<T> &output,
                 const boost::numeric::ublas::vector<T> &patch,
-                unsigned int i, unsigned int j,
-                unsigned int width, unsigned int patch_size)
+                uint i, uint j,
+                uint width, uint patch_size)
 {
     for (int x = 0; x < patch_size; x++)
         for (int y = 0; y < patch_size; y++)
         {
-            const unsigned int x2 = x + i * patch_size;
-            const unsigned int y2 = y + j * patch_size;
-            const unsigned int ipos = 3 * (x + y * patch_size);
-            const unsigned int opos = 3 * (x2 + y2 * width);
+            const uint x2 = x + i * patch_size;
+            const uint y2 = y + j * patch_size;
+            const uint ipos = x + y * patch_size;
+            const uint opos = x2 + y2 * width;
             output[opos] = patch[ipos];
-            output[opos + 1] = patch[ipos + 1];
-            output[opos + 2] = patch[ipos + 2];
         }
 }
 
 // Heart of the algorithm : compress the picture by training a network
 template<typename T>
-boost::numeric::ublas::vector<T>
-compress_picture(ffnn::Network<T> &net, const boost::numeric::ublas::vector<T> &input,
-                 T h,
-                 unsigned int width, unsigned int height,
-                 unsigned int patch_size,
+std::vector<boost::numeric::ublas::vector<T>>
+compress_picture(ffnn::Network<T> &net,
+                 std::vector<boost::numeric::ublas::vector<T>> &inputs,
+                 T h, uint loops,
+                 uint width, uint height,
+                 uint patch_size,
                  QProgressBar *pgBar)
 {
     using namespace boost::numeric::ublas;
 
     // TODO handle side blocks
-    int rows = (width - 1) / patch_size;
-    int cols = (height - 1)/ patch_size;
+    int rows = width / patch_size;
+    int cols = height / patch_size;
 
     // TODO : Create and store a vector of patchs
     // Encoding
-    std::vector< vector<double> > patch_list;
-    for (int i = 0; i < rows; i++)
-        for (int j = 0; j < cols; j++)
-            patch_list.push_back(patchify(input, i, j, width, patch_size));
+    std::vector< vector<float> > patch_list;
+    for (auto input : inputs)
+        for (int i = 0; i < rows; i++)
+            for (int j = 0; j < cols; j++)
+                patch_list.push_back(patchify(input, i, j, width, patch_size));
 
-    const int nb_cp = 3;
-    const int nb_iter = nb_cp * rows * cols;
+    const int nb_iter = loops * patch_list.size();
     int count = 0;
-    for (int z = 0; z < nb_cp; z++)
+    for (int z = 0; z < loops; z++)
         for (auto patch : patch_list)
         {
             // Learn to be an autoencoder
@@ -112,27 +111,32 @@ compress_picture(ffnn::Network<T> &net, const boost::numeric::ublas::vector<T> &
                 pgBar->setValue(5 + 90 * count / nb_iter);
         }
 
-    std::cout << net;
+    net.save_file("network.json");
 
     // Decoding
-    vector<T> output(input.size());
-    for (unsigned int i = 0; i < rows; i++)
-        for (unsigned int j = 0; j < cols; j++)
-        {
-            auto patch = patchify(input, i, j, width, patch_size);
-            patch = net.eval(patch);
-
-            unpatchify(output, patch, i, j, width, patch_size);
-        }
+    std::vector<vector<T>> outputs;
+    for (auto input : inputs)
+    {
+        vector<T> output(input.size());
+        output.clear(); // Put 0 on uncovored bands
+        for (uint i = 0; i < rows; i++)
+            for (uint j = 0; j < cols; j++)
+            {
+                auto patch = patchify(input, i, j, width, patch_size);
+                patch = net.eval(patch);
+                unpatchify(output, patch, i, j, width, patch_size);
+            }
+        outputs.push_back(std::move(output));
+    }
     pgBar->setValue(99);
 
-    return output;
+    return outputs;
 }
 
 void MainWindow::on_pushButton_clicked()
 {
     // Unactivate button
-    ui->pushButton->setEnabled(false);
+    setUIstate(false);
 
     // TODO : Do the compression in an other thread
 
@@ -149,72 +153,79 @@ void MainWindow::on_pushButton_clicked()
     //
     // We divide by 256 because 1 is a value that cannot be output, although 0 is obtained by converting to int a small value.
 
-    const int patch_size = ui->inputSize->value();
-    const int input_size = patch_size * patch_size * 3;
-    const int width = inputImage.width();
-    const int height = inputImage.height();
-    const int hidden_size = ui->hiddenSize->value();
+    const uint patch_size = ui->inputSize->value();
+    const uint input_size = __SQ(patch_size);
+    const uint width = inputImage.width();
+    const uint height = inputImage.height();
+    const uint hidden_size = ui->hiddenSize->value();
+    const float h = ui->step->value();
+    const uint z = ui->loop->value();
 
-    ffnn::Network<double> net;
+    ffnn::Network<float> net;
     // Patchs are made of patch_size_patch_size square, where each pixel
     // has 3 colors.
-    ffnn::Layer<double> l1(input_size, hidden_size * 2, ffnn::sigmoid, ffnn::sigmoid_prime);
-    ffnn::Layer<double> l1a(hidden_size * 2, hidden_size, ffnn::sigmoid, ffnn::sigmoid_prime);
-    ffnn::Layer<double> l2a(hidden_size, hidden_size * 2, ffnn::sigmoid, ffnn::sigmoid_prime);
-    ffnn::Layer<double> l2(hidden_size * 2, input_size, ffnn::sigmoid, ffnn::sigmoid_prime);
+    ffnn::Layer<float> l1(input_size, hidden_size, ffnn::sigmoid, ffnn::sigmoid_prime);
+    ffnn::Layer<float> l2(hidden_size, input_size, ffnn::sigmoid, ffnn::sigmoid_prime);
     l1.randomize();
-    l1a.randomize();
-    l2a.randomize();
     l2.randomize();
     net.connect_layer(l1);
-    net.connect_layer(l1a);
-    net.connect_layer(l2a);
     net.connect_layer(l2);
 
     // Prepare matrix for compression
     using namespace boost::numeric::ublas;
 
-    vector<double> input(width * height * 3);
-    for (int x = 0; x < width; x++)
-        for (int y = 0; y < height; y++)
+    vector<float> r(width * height);
+    vector<float> g(width * height);
+    vector<float> b(width * height);
+    for (uint x = 0; x < width; x++)
+        for (uint y = 0; y < height; y++)
         {
-            const int pos = 3 * (x + y * width);
+            const int pos = x + y * width;
             const QRgb pix = inputImage.pixel(x, y);
 
             // Add an offset
-            input[pos] = (double)qRed(pix) / 256.;
-            input[pos + 1] = (double)qGreen(pix) / 256.;
-            input[pos + 2] = (double)qBlue(pix) / 256.;
+            r[pos] = (float)qRed(pix) / 256.;
+            g[pos] = (float)qGreen(pix) / 256.;
+            b[pos] = (float)qBlue(pix) / 256.;
         }
     ui->progressBar->setValue(5);
 
+    std::vector<vector<float>> images;
+    images.push_back(r);
+    images.push_back(g);
+    images.push_back(b);
+
     //Compression algorithm
-    vector<double> output = compress_picture(net,
-                                             input, 3.0,
-                                             width, height,
-                                             patch_size,
-                                             ui->progressBar);
+    std::vector<vector<float>> outputs =
+        compress_picture(net,
+                         images,
+                         h, z,
+                         width, height,
+                         patch_size,
+                         ui->progressBar);
 
     //////////////////////////
     // Build compressed QImage
 
     //TODO FOUND IT :D
-    QImage outputImage(width, height, QImage::Format_RGB32);
-    for (int x = 0; x < width; x++)
-        for (int y = 0; y < height; y++)
+    outputImage = QImage(width, height, QImage::Format_RGB32);
+    for (uint x = 0; x < width; x++)
+        for (uint y = 0; y < height; y++)
         {
-            const int pos = 3 * (x + y * width);
+            const int pos = x + y * width;
             // Remove offset
-            const QRgb pix = qRgb(std::min(255, (int)(output[pos] * 256)),
-                                  std::min(255, (int)(output[pos + 1] * 256)),
-                                  std::min(255, (int)(output[pos + 2] * 256)));
+            const QRgb pix = qRgb(std::min(255, (int)(outputs[0][pos] * 256)),
+                                  std::min(255, (int)(outputs[1][pos] * 256)),
+                                  std::min(255, (int)(outputs[2][pos] * 256)));
             outputImage.setPixel(x, y, pix);
         }
 
     ui->cmpLabel->setPixmap(QPixmap::fromImage(outputImage));
 
-    //Disable compression
     ui->progressBar->setValue(100);
+    setUIstate(true);
+    updateValues(true);
+    ui->actionSave_output_picture->setEnabled(true);
 }
 
 void MainWindow::on_actionLoad_a_picture_triggered()
@@ -233,20 +244,65 @@ void MainWindow::on_actionLoad_a_picture_triggered()
     ui->imgLabel->setPixmap(QPixmap::fromImage(inputImage));
 
     // Enable controls
-    ui->inputSize->setEnabled(true);
-    ui->hiddenSize->setEnabled(true);
-    ui->progressBar->setEnabled(true);
-    ui->pushButton->setEnabled(true);
+    setUIstate(true);
     ui->progressBar->setValue(0);
+    updateValues(true);
     ui->cmpLabel->setPixmap(QPixmap());
 }
 
-void MainWindow::on_inputSize_valueChanged(int arg1)
+void MainWindow::setUIstate(bool st)
 {
-    ui->pushButton->setEnabled(true);
+    ui->inputSize->setEnabled(st);
+    ui->hiddenSize->setEnabled(st);
+    ui->progressBar->setEnabled(st);
+    ui->pushButton->setEnabled(st);
+    ui->loop->setEnabled(st);
+    ui->step->setEnabled(st);
 }
 
-void MainWindow::on_hiddenSize_valueChanged(int arg1)
+void MainWindow::on_inputSize_valueChanged(int)
 {
-    ui->pushButton->setEnabled(true);
+    updateValues(true);
+}
+
+void MainWindow::on_hiddenSize_valueChanged(int)
+{
+    updateValues(true);
+}
+
+void MainWindow::updateValues(bool allowCompress)
+{
+    const int hidden_size = ui->hiddenSize->value();
+    const int input_size = ui->inputSize->value();
+    const int rows = inputImage.width() / input_size;
+    const int cols = inputImage.height() / input_size;
+    const int isize = inputImage.width() * inputImage.height() * 3 / 1000;
+    const int networksize = hidden_size + input_size + hidden_size * input_size;
+    const int osize = ((networksize + rows * cols * hidden_size * 3) / 1000);
+    const int tsize = ui->loop->value() * rows * cols * 3;
+
+    ui->isize->setText(QString::number(isize) + "k");
+    ui->osize->setText(QString::number(osize) + "k");
+    ui->ratio->setText(QString::number((float)isize/(float)osize));
+    ui->training_size->setText(QString::number(tsize));
+    ui->pushButton->setEnabled(allowCompress);
+}
+
+void MainWindow::on_loop_valueChanged(int)
+{
+    updateValues(true);
+}
+
+void MainWindow::on_actionSave_output_picture_triggered()
+{
+
+    //Load picture
+    QString fileName = QFileDialog::getSaveFileName(this, "Open Image", "", "Image Files (*.png *.jpg *.jpeg *.gif *bmp)");
+
+    if(!outputImage.save(fileName))
+    {
+        QMessageBox::information(this, "NNCompress", "Can't save file '" + fileName + "' !");
+        return;
+    }
+
 }

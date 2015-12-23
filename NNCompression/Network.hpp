@@ -2,6 +2,7 @@
 #define NETWORK_HPP_
 
 #include <Layer.hpp>
+#include "FMap.hpp"
 
 #include <boost/numeric/ublas/matrix_sparse.hpp>
 #include <boost/numeric/ublas/vector_sparse.hpp>
@@ -11,6 +12,7 @@
 #include <boost/property_tree/ptree.hpp>
 
 #include <fstream>
+#include <cmath>
 
 namespace ffnn
 {
@@ -117,9 +119,23 @@ namespace ffnn
             {
                 auto m = outer_prod(*delta_it, *a_vec_it);
 
+                // Apply L1 regularisation
+                const T s = (T)0.00001;
+                auto f = [&](T x) -> T
+                {
+                    T r = std::abs(x) - h*s;
+                    if (r <= 0)
+                        return 0;
+                    else
+                        return std::copysign(r, x);
+                };
+                f %= l.weights;
+                f %= l.biases;
+
                 // Update with the gradient
                 l.weights -= h * m;
                 l.biases -= h * (*delta_it);
+
                 a_vec_it++;
                 delta_it++;
             }

@@ -17,7 +17,8 @@ SOURCES += main.cpp\
 
 HEADERS  += mainwindow.h \
     Layer.hpp \
-    Network.hpp
+    Network.hpp \
+    FMap.hpp
 
 FORMS    += mainwindow.ui
 
