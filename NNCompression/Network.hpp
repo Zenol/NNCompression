@@ -120,7 +120,6 @@ namespace ffnn
                 // Update with the gradient
                 l.weights -= h * m;
                 l.biases -= h * (*delta_it);
-
                 a_vec_it++;
                 delta_it++;
             }

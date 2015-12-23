@@ -4,6 +4,9 @@
 #include <QFileDialog>
 #include <QMessageBox>
 
+#include <vector>
+#include <algorithm>
+
 #include "Network.hpp"
 
 MainWindow::MainWindow(QWidget *parent) :
@@ -31,19 +34,26 @@ MainWindow::~MainWindow()
 template<typename T>
 boost::numeric::ublas::vector<T>
 patchify(const boost::numeric::ublas::vector<T> &input,
-         int i, int j, int width, int patch_size)
+         unsigned int i, unsigned int j,
+         unsigned int width, unsigned int patch_size)
 {
     using namespace boost::numeric::ublas;
 
     vector<T> patch(patch_size * patch_size * 3);
+    patch.clear();
 
-    for (int x = 0; x < patch_size; x++)
-        for (int y = 0; y < patch_size; y++)
+    for (unsigned int x = 0; x < patch_size; x++)
+        for (unsigned int y = 0; y < patch_size; y++)
         {
-            const int x2 = x + i * patch_size;
-            const int y2 = y + j * patch_size;
-            patch[x + y * patch_size] = input[x2 + y2 * width];
+            const unsigned int x2 = x + i * patch_size;
+            const unsigned int y2 = y + j * patch_size;
+            const unsigned int opos = 3 * (x + y * patch_size);
+            const unsigned int ipos = 3 * (x2 + y2 * width);
+            patch[opos] = input[ipos];
+            patch[opos + 1] = input[ipos + 1];
+            patch[opos + 2] = input[ipos + 2];
         }
+
     return patch;
 }
 //TODO : create an object "patch" with this methods
@@ -51,14 +61,19 @@ patchify(const boost::numeric::ublas::vector<T> &input,
 template<typename T>
 void unpatchify(boost::numeric::ublas::vector<T> &output,
                 const boost::numeric::ublas::vector<T> &patch,
-                int i, int j, int width, int patch_size)
+                unsigned int i, unsigned int j,
+                unsigned int width, unsigned int patch_size)
 {
     for (int x = 0; x < patch_size; x++)
         for (int y = 0; y < patch_size; y++)
         {
-            const int x2 = x + i * patch_size;
-            const int y2 = y + j * patch_size;
-            output[x2 + y2 * width] = patch[x + y * patch_size];
+            const unsigned int x2 = x + i * patch_size;
+            const unsigned int y2 = y + j * patch_size;
+            const unsigned int ipos = 3 * (x + y * patch_size);
+            const unsigned int opos = 3 * (x2 + y2 * width);
+            output[opos] = patch[ipos];
+            output[opos + 1] = patch[ipos + 1];
+            output[opos + 2] = patch[ipos + 2];
         }
 }
 
@@ -75,31 +90,34 @@ compress_picture(ffnn::Network<T> &net, const boost::numeric::ublas::vector<T> &
 
     // TODO handle side blocks
     int rows = (width - 1) / patch_size;
-    int cols = (height - 1) / patch_size;
-    std::cout << "r&c : " << rows << " " << cols << std::endl;
+    int cols = (height - 1)/ patch_size;
+
     // TODO : Create and store a vector of patchs
     // Encoding
+    std::vector< vector<double> > patch_list;
     for (int i = 0; i < rows; i++)
-    {
         for (int j = 0; j < cols; j++)
-        {
-            auto patch = patchify(input, i, j, width, patch_size);
-            // Learn to be an autoencoder
+            patch_list.push_back(patchify(input, i, j, width, patch_size));
 
-            std::cout << net << std::endl;
-            net.train(0.001, patch, patch);
-            std::cout << net << std::endl;
-            return input;
+    const int nb_cp = 1;
+    const int nb_iter = nb_cp * rows * cols;
+    int count = 0;
+    for (int z = 0; z < nb_cp; z++)
+        for (auto patch : patch_list)
+        {
+            // Learn to be an autoencoder
+            net.train(1, patch, patch);
+            count++;
+            if (count % 10)
+                pgBar->setValue(5 + 90 * count / nb_iter);
         }
-        pgBar->setValue(5 + 50 * i / rows);
-    }
 
     std::cout << net;
 
     // Decoding
     vector<T> output(input.size());
-    for (int i = 0; i < rows; i++)
-        for (int j = 0; j < cols; j++)
+    for (unsigned int i = 0; i < rows; i++)
+        for (unsigned int j = 0; j < cols; j++)
         {
             auto patch = patchify(input, i, j, width, patch_size);
             patch = net.eval(patch);
@@ -113,6 +131,11 @@ compress_picture(ffnn::Network<T> &net, const boost::numeric::ublas::vector<T> &
 
 void MainWindow::on_pushButton_clicked()
 {
+    // Unactivate button
+    ui->pushButton->setEnabled(false);
+
+    // TODO : Do the compression in an other thread
+
     /////////////////////////////////////
     // Build network used for compression
     //
@@ -123,6 +146,8 @@ void MainWindow::on_pushButton_clicked()
     // * - > * - > *
     // * /   * \   *
     // *           *
+    //
+    // We divide by 256 because 1 is a value that cannot be output, although 0 is obtained by converting to int a small value.
 
     const int patch_size = ui->inputSize->value();
     const int input_size = patch_size * patch_size * 3;
@@ -150,9 +175,10 @@ void MainWindow::on_pushButton_clicked()
             const int pos = 3 * (x + y * width);
             const QRgb pix = inputImage.pixel(x, y);
 
-            input[pos] = (double)qRed(pix) / 255.;
-            input[pos + 1] = (double)qGreen(pix) / 255.;
-            input[pos + 2] = (double)qBlue(pix) / 255.;
+            // Add an offset
+            input[pos] = (double)qRed(pix) / 256.;
+            input[pos + 1] = (double)qGreen(pix) / 256.;
+            input[pos + 2] = (double)qBlue(pix) / 256.;
         }
     ui->progressBar->setValue(5);
 
@@ -172,7 +198,10 @@ void MainWindow::on_pushButton_clicked()
         for (int y = 0; y < height; y++)
         {
             const int pos = 3 * (x + y * width);
-            const QRgb pix = qRgb(output[pos] * 255, output[pos + 1] * 255, output[pos + 2] * 255);
+            // Remove offset
+            const QRgb pix = qRgb(std::max(255, output[pos] * 256),
+                                  std::max(255, output[pos + 1] * 256),
+                                  std::max(255, output[pos + 2] * 256));
             outputImage.setPixel(x, y, pix);
         }
 
@@ -180,7 +209,6 @@ void MainWindow::on_pushButton_clicked()
 
     //Disable compression
     ui->progressBar->setValue(100);
-    ui->pushButton->setEnabled(false);
 }
 
 void MainWindow::on_actionLoad_a_picture_triggered()
