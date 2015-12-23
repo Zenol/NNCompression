@@ -106,7 +106,7 @@ compress_picture(ffnn::Network<T> &net, const boost::numeric::ublas::vector<T> &
         for (auto patch : patch_list)
         {
             // Learn to be an autoencoder
-            net.train(3, patch, patch);
+            net.train(h, patch, patch);
             count++;
             if (count % 10)
                 pgBar->setValue(5 + 90 * count / nb_iter);
@@ -190,7 +190,7 @@ void MainWindow::on_pushButton_clicked()
 
     //Compression algorithm
     vector<double> output = compress_picture(net,
-                                             input, 1.0,
+                                             input, 3.0,
                                              width, height,
                                              patch_size,
                                              ui->progressBar);
